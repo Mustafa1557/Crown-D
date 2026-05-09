@@ -1,6 +1,5 @@
 import os
 import threading
-import shutil
 import fitz  # PyMuPDF
 from flask import Flask
 from gtts import gTTS
@@ -8,7 +7,7 @@ from pdf2docx import Converter
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
-# --- 1. إعداد Flask لضمان استمرارية السيرفر ---
+# --- 1. إعداد Flask لضمان استمرارية السيرفر على Render ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -16,7 +15,7 @@ def home():
     return "Bot is Running 24/7!"
 
 def run_flask():
-    # راندر بيمرر البورت تلقائياً في متغير PORT
+    # Render بيمرر البورت تلقائياً في متغير PORT
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
@@ -26,8 +25,11 @@ DOWNLOAD_DIR = "downloads"
 
 # دالة لمسح الملفات بعد إرسالها لتوفير مساحة السيرفر
 def cleanup(file_path):
-    if os.path.exists(file_path):
-        os.remove(file_path)
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+    except Exception as e:
+        print(f"Error cleaning up {file_path}: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -64,7 +66,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pdf_path = context.user_data.get('current_file')
 
     if not pdf_path or not os.path.exists(pdf_path):
-        await query.edit_message_text("عذراً، الملف غير موجود. أرسله مرة أخرى.")
+        await query.edit_message_text("عذراً، الملف غير موجود أو تم حذفه. أرسله مرة أخرى.")
         return
 
     if query.data == 'word':
@@ -75,12 +77,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cv.convert(docx_path)
             cv.close()
             await query.message.reply_document(document=open(docx_path, 'rb'))
-            cleanup(docx_path) # مسح الوورد بعد الإرسال
+            cleanup(docx_path)
+            cleanup(pdf_path) 
         except Exception as e:
             await query.message.reply_text(f"حدث خطأ أثناء التحويل: {str(e)}")
 
     elif query.data == 'audio':
-        await query.edit_message_text("🎧 جاري تحويل النص إلى صوت (إنجليزي)...")
+        await query.edit_message_text("🎧 جاري تحويل النص إلى صوت...")
         try:
             doc = fitz.open(pdf_path)
             text = ""
@@ -88,33 +91,34 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text += page.get_text()
             
             if text.strip():
-                # تحويل أول 3000 حرف فقط لتفادي التأخير
+                # تحويل أول 3000 حرف لتفادي التأخير (يدعم الإنجليزية لدروسك الطبية)
                 tts = gTTS(text=text[:3000], lang='en')
                 audio_path = pdf_path.replace('.pdf', '.mp3')
                 tts.save(audio_path)
                 await query.message.reply_audio(audio=open(audio_path, 'rb'))
-                cleanup(audio_path) # مسح الصوت بعد الإرسال
+                cleanup(audio_path)
+                cleanup(pdf_path)
             else:
-                await query.message.reply_text("لم أجد نصاً في هذا الملف!")
+                await query.message.reply_text("لم أجد نصاً قابلاً للقراءة في هذا الملف!")
         except Exception as e:
-            await query.message.reply_text(f"خطأ في الصوت: {str(e)}")
+            await query.message.reply_text(f"خطأ في معالجة الصوت: {str(e)}")
 
 def main():
-    # تشغيل سيرفر Flask في الخلفية
+    # تشغيل سيرفر Flask في الخلفية لإبقاء Render مستيقظاً
     threading.Thread(target=run_flask, daemon=True).start()
 
-    # تشغيل البوت
     if not TOKEN:
-        print("خطأ: BOT_TOKEN غير موجود في المتغيرات البيئية!")
+        print("خطأ: لم يتم العثور على BOT_TOKEN في الإعدادات!")
         return
 
+    # تشغيل البوت مع تنظيف التحديثات القديمة
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(CallbackQueryHandler(button_callback))
     
-    print("البوت يعمل الآن...")
-    application.run_polling()
+    print("Connecting to Telegram...")
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
