@@ -30,7 +30,7 @@ from telegram.ext import (
 app = Flask(__name__)
 @app.route('/')
 def home():
-    return "Advanced Bot is Live ✅"
+    return "Multi-Option Translator Bot is Live ✅"
 
 # =========================================
 # إعدادات البوت
@@ -41,7 +41,7 @@ DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # =========================================
-# وظائف مساعدة
+# وظائف مساعدة (Helpers)
 # =========================================
 def cleanup(path):
     try:
@@ -71,46 +71,46 @@ def extract_text(path):
 def split_text(text, size=3000):
     return [text[i:i+size] for i in range(0, len(text), size)]
 
+async def process_translation(text):
+    """دالة موحدة لمعالجة الترجمة لتجنب التكرار"""
+    if not text: return ""
+    translator = GoogleTranslator(source="auto", target="ar")
+    translated_result = ""
+    chunks = split_text(text, 2500)
+    # نترجم أول 10 قطع فقط (حوالي 25 ألف حرف) لضمان السرعة
+    for chunk in chunks[:10]:
+        if chunk.strip():
+            translated = await asyncio.to_thread(translator.translate, chunk)
+            translated_result += translated + "\n\n"
+    return translated_result
+
 # =========================================
-# الرسالة الترحيبية
+# الأوامر واستقبال الملفات
 # =========================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    welcome_msg = f"مرحباً يا {user.first_name} 👋\n\n📂 أرسل PDF / DOCX / TXT\nوسأقوم بترجمته أو تحويله لصوت إنجليزي فوراً."
-    await update.message.reply_text(welcome_msg)
+    await update.message.reply_text(f"مرحباً يا {update.effective_user.first_name} 👋\nأرسل ملفك وسأعطيك خيارات الترجمة والصوت.")
 
-# =========================================
-# استقبال الملفات
-# =========================================
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
-    
-    # قيد الحجم (15MB)
     if doc.file_size > 15 * 1024 * 1024:
-        await update.message.reply_text("❌ الملف كبير جداً. الحد الأقصى هو 15MB.")
-        return
-
-    allowed = [".pdf", ".docx", ".txt"]
-    if not any(doc.file_name.lower().endswith(x) for x in allowed):
-        await update.message.reply_text("❌ هذا النوع من الملفات غير مدعوم.")
+        await update.message.reply_text("❌ الملف كبير جداً (الحد 15MB).")
         return
 
     file_name = f"{uuid.uuid4()}_{doc.file_name}"
     file_path = os.path.join(DOWNLOAD_DIR, file_name)
-    
     file = await context.bot.get_file(doc.file_id)
     await file.download_to_drive(file_path)
     context.user_data["file_path"] = file_path
 
     keyboard = [
-        [InlineKeyboardButton("🇸🇩 ترجمة وحفظ كملف", callback_data="translate_ar")],
+        [InlineKeyboardButton("🌍 خيارات الترجمة بالعربي", callback_data="choose_trans")],
         [InlineKeyboardButton("🎧 صوت إنجليزي (Medical)", callback_data="audio_en")],
         [InlineKeyboardButton("📄 استخراج النص", callback_data="extract")]
     ]
-    await update.message.reply_text("✅ تم استلام الملف، اختر العملية:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text("✅ تم استلام الملف، ماذا نفعل؟", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # =========================================
-# معالجة الأزرار
+# معالجة الأزرار (Logic)
 # =========================================
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -118,55 +118,56 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     path = context.user_data.get("file_path")
 
     if not path:
-        await query.message.reply_text("❌ الملف غير موجود أو تم حذفه.")
+        await query.message.reply_text("❌ انتهت الجلسة أو حذف الملف.")
         return
 
     try:
-        # --- استخراج النص ---
-        if query.data == "extract":
-            await query.edit_message_text("📄 جاري استخراج النص...")
+        # --- 1. اختيار طريقة الترجمة ---
+        if query.data == "choose_trans":
+            keyboard = [
+                [InlineKeyboardButton("📄 إرسال كملف TXT", callback_data="trans_as_file")],
+                [InlineKeyboardButton("💬 إرسال كرسائل نصية", callback_data="trans_as_text")]
+            ]
+            await query.edit_message_text("كيف تريد استلام الترجمة؟", reply_markup=InlineKeyboardMarkup(keyboard))
+            return # نخرج عشان ننتظر ضغطة الزر الجاية
+
+        # --- 2. الترجمة كملف ---
+        elif query.data == "trans_as_file":
+            await query.edit_message_text("⏳ جاري الترجمة وتحضير الملف...")
             text = await asyncio.to_thread(extract_text, path)
-            if not text:
-                await query.message.reply_text("❌ فشل استخراج النص.")
-                return
+            translated = await process_translation(text)
+            
+            out_path = path.replace(".pdf", "_ar.txt").replace(".docx", "_ar.txt")
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write(translated)
+            await query.message.reply_document(document=open(out_path, "rb"), caption="✅ ملف الترجمة العربي.")
+            cleanup(out_path)
+
+        # --- 3. الترجمة كرسائل ---
+        elif query.data == "trans_as_text":
+            await query.edit_message_text("⏳ جاري الترجمة والإرسال نصياً...")
+            text = await asyncio.to_thread(extract_text, path)
+            translated = await process_translation(text)
+            chunks = split_text(translated, 3500)
+            for chunk in chunks[:5]:
+                await query.message.reply_text(chunk)
+            await query.message.reply_text("✅ تمت الترجمة النصية.")
+
+        # --- 4. استخراج النص ---
+        elif query.data == "extract":
+            await query.edit_message_text("📄 جاري الاستخراج...")
+            text = await asyncio.to_thread(extract_text, path)
             chunks = split_text(text, 3500)
             for chunk in chunks[:3]:
                 await query.message.reply_text(chunk)
 
-        # --- الترجمة وحفظ الملف ---
-        elif query.data == "translate_ar":
-            await query.edit_message_text("🌍 جاري الترجمة للعربية وحفظ الملف...")
-            text = await asyncio.to_thread(extract_text, path)
-            if not text: return
-
-            translator = GoogleTranslator(source="auto", target="ar")
-            translated_text = ""
-            chunks = split_text(text, 2500)
-
-            for chunk in chunks[:10]:
-                if chunk.strip():
-                    translated = await asyncio.to_thread(translator.translate, chunk)
-                    translated_text += translated + "\n\n"
-
-            # حفظ في ملف نصي وإرساله
-            out_path = path.replace(".pdf", "_ar.txt").replace(".docx", "_ar.txt")
-            with open(out_path, "w", encoding="utf-8") as f:
-                f.write(translated_text)
-            
-            await query.message.reply_document(document=open(out_path, "rb"), caption="✅ ملف الترجمة جاهز.")
-            cleanup(out_path)
-
-        # --- صوت إنجليزي ---
+        # --- 5. الصوت الإنجليزي ---
         elif query.data == "audio_en":
             await query.edit_message_text("🎧 جاري إنشاء الصوت الإنجليزي...")
             text = await asyncio.to_thread(extract_text, path)
-            if not text: return
-
-            try:
-                detected = detect(text[:1000])
-            except:
-                detected = "en"
-
+            try: detected = detect(text[:500])
+            except: detected = "en"
+            
             if detected != "en":
                 translator = GoogleTranslator(source="auto", target="en")
                 text = await asyncio.to_thread(translator.translate, text[:2500])
@@ -174,32 +175,28 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             audio_path = os.path.join(DOWNLOAD_DIR, f"{uuid.uuid4()}.mp3")
             tts = gTTS(text=text[:4000], lang="en", slow=False)
             tts.save(audio_path)
-            
-            with open(audio_path, "rb") as audio:
-                await query.message.reply_audio(audio=audio, caption="✅ النطق الإنجليزي للمحاضرة.")
+            with open(audio_path, "rb") as f:
+                await query.message.reply_audio(audio=f)
             cleanup(audio_path)
 
     except Exception as e:
-        await query.message.reply_text(f"❌ حدث خطأ: {e}")
+        await query.message.reply_text(f"❌ خطأ: {e}")
+    
+    # التنظيف النهائي للملف الأصلي (فقط عند انتهاء العمليات وليس عند اختيار النوع)
+    if query.data in ["trans_as_file", "trans_as_text", "extract", "audio_en"]:
+        finally_cleanup(path, context)
 
-    # التنظيف النهائي للملف الأصلي (في آخر الـ callback)
-    finally:
-        cleanup(path)
-        context.user_data.pop("file_path", None)
+def finally_cleanup(path, context):
+    cleanup(path)
+    context.user_data.pop("file_path", None)
 
-# =========================================
-# التشغيل
-# =========================================
 def main():
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))), daemon=True).start()
-    
     if not TOKEN: return
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(CallbackQueryHandler(button_callback))
-    
-    print("✅ Bot is Optimized & Started")
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
