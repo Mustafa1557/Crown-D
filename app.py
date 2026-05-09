@@ -1,134 +1,122 @@
 import os
 import threading
+import uuid
 import fitz
-from flask import Flask
-from gtts import gTTS
 from pdf2docx import Converter
-from PyPDF2 import PdfMerger
-from deep_translator import GoogleTranslator
+from gtts import gTTS
+import google.generativeai as genai
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
+# ------------------ إعداد السيرفر ------------------
 app = Flask(__name__)
-
 @app.route('/')
-def home():
-    return "Bot is Active!"
+def home(): return "All-in-One Bot is Live!"
 
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
-# --- الإعدادات ---
-TOKEN = os.environ.get('BOT_TOKEN')
-ADMIN_ID = 8168754101  # <--- تأكد من وضع رقم الـ ID الخاص بك هنا
+# ------------------ المتغيرات ------------------
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+GEMINI_KEY = os.environ.get("GOOGLE_API_KEY")
 DOWNLOAD_DIR = "downloads"
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-async def notify_admin(context, message):
-    if ADMIN_ID:
-        try:
-            await context.bot.send_message(chat_id=ADMIN_ID, text=f"📢 تقرير المراقبة:\n{message}")
-        except: pass
+# ------------------ Gemini (مع إضافة التعليمات) ------------------
+model = None
+if GEMINI_KEY:
+    genai.configure(api_key=GEMINI_KEY)
+    # ضفنا هنا الـ System Instruction عشان الإجابات تعجبك
+    model = genai.GenerativeModel(
+        model_name="gemini-1.5-flash-latest",
+        system_instruction="أنت 'دحيح'. إجاباتك مختصرة جداً، علمية، وفي نقاط واضحة."
+    )
 
-def cleanup(file_path):
-    try:
-        if os.path.exists(file_path): os.remove(file_path)
-    except: pass
-
-# --- وظائف البوت المعدلة ---
-
+# ------------------ أوامر البوت ------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.message.from_user
-    user_name = user.first_name
-    
-    # إشعار للأدمن بتفاصيل المستخدم الجديد
-    admin_msg = (f"👤 مستخدم جديد دخل البوت:\n"
-                 f"🔹 الاسم: {user_name}\n"
-                 f"🔹 اليوزر: @{user.username if user.username else 'لا يوجد'}\n"
-                 f"🔹 الـ ID: `{user.id}`")
-    await notify_admin(context, admin_msg)
-    
-    # الرد على المستخدم باسمه هو وليس اسمك
-    await update.message.reply_text(f"مرحباً يا {user_name}! 👋\nأرسل لي ملف PDF وسأقوم بمعالجته لك فوراً.")
+    await update.message.reply_text("أهلاً يا دحيح! 🤖\nأرسل نص للدردشة أو PDF للتحويل والترجمة.")
 
+# ------------------ الرسائل النصية والصوت ------------------
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not model:
+        await update.message.reply_text("❌ Gemini API غير مفعلة.")
+        return
+
+    user_text = update.message.text
+    try:
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+        response = model.generate_content(user_text)
+        res_text = response.text if response.text else "ما قدرت أطلع رد."
+
+        # إرسال النص
+        await update.message.reply_text(res_text[:4096])
+
+        # الصوت (Voice Note)
+        audio_name = f"{uuid.uuid4()}.ogg"
+        tts = gTTS(text=res_text[:500], lang='ar')
+        tts.save(audio_name)
+        with open(audio_name, "rb") as audio:
+            await update.message.reply_voice(audio)
+        os.remove(audio_name)
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ حصل خطأ:\n{str(e)}")
+
+# ------------------ استقبال ومعالجة PDF ------------------
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
-    user = update.message.from_user
-    
-    if not doc.file_name.lower().endswith('.pdf'):
-        await update.message.reply_text("عذراً، أقبل ملفات PDF فقط.")
+    if not doc.file_name.lower().endswith(".pdf"):
+        await update.message.reply_text("❌ أرسل ملف PDF فقط.")
         return
-    
-    # إخطار الإدارة بالملف المرفوع
-    await notify_admin(context, f"📥 {user.first_name} أرسل ملفاً:\n📄 {doc.file_name}")
 
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    pdf_path = os.path.join(DOWNLOAD_DIR, doc.file_name)
+    pdf_path = os.path.join(DOWNLOAD_DIR, f"{uuid.uuid4()}_{doc.file_name}")
     file = await context.bot.get_file(doc.file_id)
     await file.download_to_drive(pdf_path)
-    context.user_data['current_file'] = pdf_path
+    context.user_data["current_file"] = pdf_path
 
-    keyboard = [[InlineKeyboardButton("Word 📝", callback_data='word')],
-                [InlineKeyboardButton("صوت 🎙️", callback_data='audio')],
-                [InlineKeyboardButton("ترجمة 🇸🇩", callback_data='translate')],
-                [InlineKeyboardButton("دمج 📂", callback_data='merge')]]
-    await update.message.reply_text("الملف جاهز! ماذا تريد أن أفعل؟", reply_markup=InlineKeyboardMarkup(keyboard))
+    keyboard = [
+        [InlineKeyboardButton("ترجمة النص 🇸🇩", callback_data="translate")],
+        [InlineKeyboardButton("تحويل لـ Word 📝", callback_data="word")]
+    ]
+    await update.message.reply_text(f"📄 الملف: {doc.file_name}\nماذا نفعل؟", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user = query.from_user
-    pdf_path = context.user_data.get('current_file')
+    pdf_path = context.user_data.get("current_file")
 
-    # مراقبة ضغطات الأزرار
-    await notify_admin(context, f"⚙️ {user.first_name} اختار عملية: {query.data}")
+    if not pdf_path or not os.path.exists(pdf_path):
+        await query.edit_message_text("❌ الملف غير موجود.")
+        return
 
-    if query.data == 'translate' and pdf_path:
-        await query.edit_message_text("🇸🇩 جاري الترجمة...")
-        try:
-            doc = fitz.open(pdf_path)
-            full_text = "".join([page.get_text() for page in doc])
-            translator = GoogleTranslator(source='auto', target='ar')
-            chunks = [full_text[i:i+2000] for i in range(0, len(full_text), 2000)]
-            for chunk in chunks:
-                if chunk.strip():
-                    await query.message.reply_text(translator.translate(chunk))
-            await query.message.reply_text("✅ تمت الترجمة بنجاح.")
-        except:
-            await query.message.reply_text("فشلت الترجمة، قد يكون الملف محمياً أو كبيراً جداً.")
+    if query.data == "word":
+        await query.edit_message_text("🔄 جاري التحويل...")
+        docx_path = pdf_path.replace(".pdf", ".docx")
+        cv = Converter(pdf_path)
+        cv.convert(docx_path)
+        cv.close()
+        with open(docx_path, "rb") as f:
+            await query.message.reply_document(f)
+        os.remove(docx_path)
 
-    elif query.data == 'word' and pdf_path:
-        await query.edit_message_text("🔄 جاري التحويل لوورد...")
-        try:
-            docx_path = pdf_path.replace('.pdf', '.docx')
-            cv = Converter(pdf_path)
-            cv.convert(docx_path); cv.close()
-            await query.message.reply_document(document=open(docx_path, 'rb'))
-            cleanup(docx_path)
-        except Exception as e:
-            await query.message.reply_text(f"خطأ في التحويل: {e}")
+    elif query.data == "translate":
+        await query.edit_message_text("🔄 جاري الترجمة...")
+        doc = fitz.open(pdf_path)
+        text = "".join([page.get_text() for page in doc])
+        doc.close()
+        res = model.generate_content(f"ترجم النص التالي بأسلوب علمي مبسط: {text[:3000]}")
+        await query.message.reply_text(res.text[:4096])
 
-    elif query.data == 'audio' and pdf_path:
-        await query.edit_message_text("🎧 جاري تحويل النص لصوت...")
-        try:
-            doc = fitz.open(pdf_path)
-            text = "".join([page.get_text() for page in doc])
-            tts = gTTS(text=text[:2000], lang='en')
-            audio_path = pdf_path.replace('.pdf', '.mp3')
-            tts.save(audio_path)
-            await query.message.reply_audio(audio=open(audio_path, 'rb'))
-            cleanup(audio_path)
-        except Exception as e:
-            await query.message.reply_text(f"خطأ في الصوت: {e}")
-
+# ------------------ التشغيل ------------------
 def main():
-    threading.Thread(target=run_flask, daemon=True).start()
-    if not TOKEN: return
-    app_tg = Application.builder().token(TOKEN).build()
-    app_tg.add_handler(CommandHandler("start", start))
-    app_tg.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app_tg.add_handler(CallbackQueryHandler(button_callback))
-    app_tg.run_polling(drop_pending_updates=True)
+    if not BOT_TOKEN: return
+    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))), daemon=True).start()
+    
+    application = Application.builder().token(BOT_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.Document.PDF, handle_document))
+    application.add_handler(CallbackQueryHandler(button_callback))
+    
+    application.run_polling(drop_pending_updates=True)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
