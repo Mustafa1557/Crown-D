@@ -4,4 +4,4 @@ gTTS
 PyMuPDF
 pdf2docx
 PyPDF2
-googletrans==4.0.0-rc1
+deep-translator
