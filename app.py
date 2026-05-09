@@ -21,13 +21,13 @@ def run_flask():
 
 # --- الإعدادات ---
 TOKEN = os.environ.get('BOT_TOKEN')
-ADMIN_ID = 8168754101  # <--- ضيف الـ ID بتاعك هنا يا مصطفى
+ADMIN_ID = 12345678  # <--- تأكد من وضع رقم الـ ID الخاص بك هنا
 DOWNLOAD_DIR = "downloads"
 
 async def notify_admin(context, message):
     if ADMIN_ID:
         try:
-            await context.bot.send_message(chat_id=ADMIN_ID, text=f"📢 مراقبة:\n{message}")
+            await context.bot.send_message(chat_id=ADMIN_ID, text=f"📢 تقرير المراقبة:\n{message}")
         except: pass
 
 def cleanup(file_path):
@@ -35,17 +35,32 @@ def cleanup(file_path):
         if os.path.exists(file_path): os.remove(file_path)
     except: pass
 
+# --- وظائف البوت المعدلة ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
-    await notify_admin(context, f"مستخدم ضغط /start: {user.first_name} (@{user.username})")
-    await update.message.reply_text("أهلاً مصطفى! أرسل ملف PDF وسأعالجُه لك.")
+    user_name = user.first_name
+    
+    # إشعار للأدمن بتفاصيل المستخدم الجديد
+    admin_msg = (f"👤 مستخدم جديد دخل البوت:\n"
+                 f"🔹 الاسم: {user_name}\n"
+                 f"🔹 اليوزر: @{user.username if user.username else 'لا يوجد'}\n"
+                 f"🔹 الـ ID: `{user.id}`")
+    await notify_admin(context, admin_msg)
+    
+    # الرد على المستخدم باسمه هو وليس اسمك
+    await update.message.reply_text(f"مرحباً يا {user_name}! 👋\nأرسل لي ملف PDF وسأقوم بمعالجته لك فوراً.")
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
-    if not doc.file_name.lower().endswith('.pdf'): return
-    
     user = update.message.from_user
-    await notify_admin(context, f"📥 استلام ملف: {doc.file_name}\nمن: {user.first_name} (@{user.username})")
+    
+    if not doc.file_name.lower().endswith('.pdf'):
+        await update.message.reply_text("عذراً، أقبل ملفات PDF فقط.")
+        return
+    
+    # إخطار الإدارة بالملف المرفوع
+    await notify_admin(context, f"📥 {user.first_name} أرسل ملفاً:\n📄 {doc.file_name}")
 
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     pdf_path = os.path.join(DOWNLOAD_DIR, doc.file_name)
@@ -57,7 +72,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("صوت 🎙️", callback_data='audio')],
                 [InlineKeyboardButton("ترجمة 🇸🇩", callback_data='translate')],
                 [InlineKeyboardButton("دمج 📂", callback_data='merge')]]
-    await update.message.reply_text("اختر المهمة:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text("الملف جاهز! ماذا تريد أن أفعل؟", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -65,7 +80,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
     pdf_path = context.user_data.get('current_file')
 
-    await notify_admin(context, f"⚙️ {user.first_name} اختار مهمة: {query.data}")
+    # مراقبة ضغطات الأزرار
+    await notify_admin(context, f"⚙️ {user.first_name} اختار عملية: {query.data}")
 
     if query.data == 'translate' and pdf_path:
         await query.edit_message_text("🇸🇩 جاري الترجمة...")
@@ -77,27 +93,33 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for chunk in chunks:
                 if chunk.strip():
                     await query.message.reply_text(translator.translate(chunk))
-            await query.message.reply_text("✅ تمت الترجمة.")
+            await query.message.reply_text("✅ تمت الترجمة بنجاح.")
         except:
-            await query.message.reply_text("خطأ في الترجمة.")
+            await query.message.reply_text("فشلت الترجمة، قد يكون الملف محمياً أو كبيراً جداً.")
 
     elif query.data == 'word' and pdf_path:
-        await query.edit_message_text("🔄 جاري التحويل...")
-        docx_path = pdf_path.replace('.pdf', '.docx')
-        cv = Converter(pdf_path)
-        cv.convert(docx_path); cv.close()
-        await query.message.reply_document(document=open(docx_path, 'rb'))
-        cleanup(docx_path)
+        await query.edit_message_text("🔄 جاري التحويل لوورد...")
+        try:
+            docx_path = pdf_path.replace('.pdf', '.docx')
+            cv = Converter(pdf_path)
+            cv.convert(docx_path); cv.close()
+            await query.message.reply_document(document=open(docx_path, 'rb'))
+            cleanup(docx_path)
+        except Exception as e:
+            await query.message.reply_text(f"خطأ في التحويل: {e}")
 
     elif query.data == 'audio' and pdf_path:
-        await query.edit_message_text("🎧 جاري التحويل لصوت...")
-        doc = fitz.open(pdf_path)
-        text = "".join([page.get_text() for page in doc])
-        tts = gTTS(text=text[:2000], lang='en')
-        audio_path = pdf_path.replace('.pdf', '.mp3')
-        tts.save(audio_path)
-        await query.message.reply_audio(audio=open(audio_path, 'rb'))
-        cleanup(audio_path)
+        await query.edit_message_text("🎧 جاري تحويل النص لصوت...")
+        try:
+            doc = fitz.open(pdf_path)
+            text = "".join([page.get_text() for page in doc])
+            tts = gTTS(text=text[:2000], lang='en')
+            audio_path = pdf_path.replace('.pdf', '.mp3')
+            tts.save(audio_path)
+            await query.message.reply_audio(audio=open(audio_path, 'rb'))
+            cleanup(audio_path)
+        except Exception as e:
+            await query.message.reply_text(f"خطأ في الصوت: {e}")
 
 def main():
     threading.Thread(target=run_flask, daemon=True).start()
