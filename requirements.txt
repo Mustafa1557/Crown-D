@@ -5,5 +5,5 @@ pdf2docx
 gTTS
 python-docx
 python-pptx
-
-
+deep-translator
+langdetect
