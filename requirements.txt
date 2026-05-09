@@ -1,0 +1,6 @@
+python-telegram-bot
+flask
+gTTS
+PyMuPDF
+pdf2docx
+
