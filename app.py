@@ -21,7 +21,7 @@ def run_flask():
 
 # --- الإعدادات ---
 TOKEN = os.environ.get('BOT_TOKEN')
-ADMIN_ID = 12345678  # <--- تأكد من وضع رقم الـ ID الخاص بك هنا
+ADMIN_ID = 8168754101  # <--- تأكد من وضع رقم الـ ID الخاص بك هنا
 DOWNLOAD_DIR = "downloads"
 
 async def notify_admin(context, message):
