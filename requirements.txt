@@ -5,3 +5,4 @@ PyMuPDF
 pdf2docx
 PyPDF2
 deep-translator
+
