@@ -1,6 +1,6 @@
 import os
 import threading
-import fitz  # PyMuPDF
+import fitz
 from flask import Flask
 from gtts import gTTS
 from pdf2docx import Converter
@@ -9,143 +9,104 @@ from deep_translator import GoogleTranslator
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
-# --- 1. إعداد Flask لضمان استمرارية السيرفر ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is Alive and Running!"
+    return "Bot is Active!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# --- 2. الإعدادات العامة ---
+# --- الإعدادات ---
 TOKEN = os.environ.get('BOT_TOKEN')
+ADMIN_ID = 12345678  # <--- ضيف الـ ID بتاعك هنا يا مصطفى
 DOWNLOAD_DIR = "downloads"
+
+async def notify_admin(context, message):
+    if ADMIN_ID:
+        try:
+            await context.bot.send_message(chat_id=ADMIN_ID, text=f"📢 مراقبة:\n{message}")
+        except: pass
 
 def cleanup(file_path):
     try:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-    except:
-        pass
+        if os.path.exists(file_path): os.remove(file_path)
+    except: pass
 
-# --- 3. وظائف البوت ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "أهلاً مصطفى! 🎓\n"
-        "أرسل لي ملف PDF وسأقوم بمعالجته (ترجمة، تحويل، صوت، دمج)."
-    )
+    user = update.message.from_user
+    await notify_admin(context, f"مستخدم ضغط /start: {user.first_name} (@{user.username})")
+    await update.message.reply_text("أهلاً مصطفى! أرسل ملف PDF وسأعالجُه لك.")
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
-    if not doc.file_name.lower().endswith('.pdf'):
-        await update.message.reply_text("الرجاء إرسال ملف PDF فقط.")
-        return
+    if not doc.file_name.lower().endswith('.pdf'): return
+    
+    user = update.message.from_user
+    await notify_admin(context, f"📥 استلام ملف: {doc.file_name}\nمن: {user.first_name} (@{user.username})")
 
-    msg = await update.message.reply_text("⏳ جاري تحميل الملف...")
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     pdf_path = os.path.join(DOWNLOAD_DIR, doc.file_name)
-    
     file = await context.bot.get_file(doc.file_id)
     await file.download_to_drive(pdf_path)
     context.user_data['current_file'] = pdf_path
 
-    keyboard = [
-        [InlineKeyboardButton("Word 📝", callback_data='word')],
-        [InlineKeyboardButton("صوت 🎙️", callback_data='audio')],
-        [InlineKeyboardButton("ترجمة كاملة 🇸🇩", callback_data='translate')],
-        [InlineKeyboardButton("دمج الملفات 📂", callback_data='merge')]
-    ]
-    await msg.edit_text("الملف جاهز! اختر المهمة:", reply_markup=InlineKeyboardMarkup(keyboard))
+    keyboard = [[InlineKeyboardButton("Word 📝", callback_data='word')],
+                [InlineKeyboardButton("صوت 🎙️", callback_data='audio')],
+                [InlineKeyboardButton("ترجمة 🇸🇩", callback_data='translate')],
+                [InlineKeyboardButton("دمج 📂", callback_data='merge')]]
+    await update.message.reply_text("اختر المهمة:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    user = query.from_user
     pdf_path = context.user_data.get('current_file')
 
-    if not pdf_path or not os.path.exists(pdf_path):
-        if query.data != 'merge':
-            await query.edit_message_text("عذراً، الملف غير موجود. أرسله مرة أخرى.")
-            return
+    await notify_admin(context, f"⚙️ {user.first_name} اختار مهمة: {query.data}")
 
-    if query.data == 'word':
-        await query.edit_message_text("🔄 جاري التحويل لوورد...")
-        docx_path = pdf_path.replace('.pdf', '.docx')
-        try:
-            cv = Converter(pdf_path)
-            cv.convert(docx_path)
-            cv.close()
-            await query.message.reply_document(document=open(docx_path, 'rb'))
-            cleanup(docx_path)
-        except Exception as e:
-            await query.message.reply_text(f"خطأ: {e}")
-
-    elif query.data == 'audio':
-        await query.edit_message_text("🎧 جاري التحويل لصوت...")
-        try:
-            doc = fitz.open(pdf_path)
-            text = "".join([page.get_text() for page in doc])
-            if text.strip():
-                tts = gTTS(text=text[:3000], lang='en')
-                audio_path = pdf_path.replace('.pdf', '.mp3')
-                tts.save(audio_path)
-                await query.message.reply_audio(audio=open(audio_path, 'rb'))
-                cleanup(audio_path)
-            else:
-                await query.message.reply_text("الملف فارغ!")
-        except Exception as e:
-            await query.message.reply_text(f"خطأ: {e}")
-
-    elif query.data == 'translate':
-        await query.edit_message_text("🇸🇩 جاري الترجمة وتقسيم النص...")
+    if query.data == 'translate' and pdf_path:
+        await query.edit_message_text("🇸🇩 جاري الترجمة...")
         try:
             doc = fitz.open(pdf_path)
             full_text = "".join([page.get_text() for page in doc])
             translator = GoogleTranslator(source='auto', target='ar')
-            
-            # تقسيم النص لضمان عدم تجاوز حد تلغرام (4096 حرف)
             chunks = [full_text[i:i+2000] for i in range(0, len(full_text), 2000)]
-            
             for chunk in chunks:
                 if chunk.strip():
-                    translated_part = translator.translate(chunk)
-                    await query.message.reply_text(translated_part)
-            
-            await query.message.reply_text("✅ تمت الترجمة كاملة.")
-        except Exception as e:
-            await query.message.reply_text(f"خطأ ترجمة: {e}")
+                    await query.message.reply_text(translator.translate(chunk))
+            await query.message.reply_text("✅ تمت الترجمة.")
+        except:
+            await query.message.reply_text("خطأ في الترجمة.")
 
-    elif query.data == 'merge':
-        await query.edit_message_text("🔄 جاري دمج الملفات...")
-        try:
-            merger = PdfMerger()
-            pdf_files = [f for f in os.listdir(DOWNLOAD_DIR) if f.endswith('.pdf')]
-            if len(pdf_files) < 2:
-                await query.message.reply_text("أرسل ملفين أولاً.")
-                return
-            for f in sorted(pdf_files):
-                merger.append(os.path.join(DOWNLOAD_DIR, f))
-            merged_path = os.path.join(DOWNLOAD_DIR, "merged.pdf")
-            merger.write(merged_path)
-            merger.close()
-            await query.message.reply_document(document=open(merged_path, 'rb'))
-            cleanup(merged_path)
-        except Exception as e:
-            await query.message.reply_text(f"خطأ دمج: {e}")
+    elif query.data == 'word' and pdf_path:
+        await query.edit_message_text("🔄 جاري التحويل...")
+        docx_path = pdf_path.replace('.pdf', '.docx')
+        cv = Converter(pdf_path)
+        cv.convert(docx_path); cv.close()
+        await query.message.reply_document(document=open(docx_path, 'rb'))
+        cleanup(docx_path)
+
+    elif query.data == 'audio' and pdf_path:
+        await query.edit_message_text("🎧 جاري التحويل لصوت...")
+        doc = fitz.open(pdf_path)
+        text = "".join([page.get_text() for page in doc])
+        tts = gTTS(text=text[:2000], lang='en')
+        audio_path = pdf_path.replace('.pdf', '.mp3')
+        tts.save(audio_path)
+        await query.message.reply_audio(audio=open(audio_path, 'rb'))
+        cleanup(audio_path)
 
 def main():
     threading.Thread(target=run_flask, daemon=True).start()
-    if not TOKEN:
-        print("Missing BOT_TOKEN!")
-        return
-    application = Application.builder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    application.add_handler(CallbackQueryHandler(button_callback))
-    print("Bot is starting...")
-    application.run_polling(drop_pending_updates=True)
+    if not TOKEN: return
+    app_tg = Application.builder().token(TOKEN).build()
+    app_tg.add_handler(CommandHandler("start", start))
+    app_tg.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app_tg.add_handler(CallbackQueryHandler(button_callback))
+    app_tg.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
