@@ -13,21 +13,21 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 # --- إعداد السيرفر ---
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Tools Bot with Admin Monitor is Live!"
+def home(): return "Tools Bot is Live & Monitored!"
 
-# --- المتغيرات المخفية ---
+# --- المتغيرات الآمنة ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-ADMIN_ID = os.environ.get("ADMIN_ID") # تأكد من وضع الـ ID في راندر
+ADMIN_ID = os.environ.get("ADMIN_ID") 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# --- دالة إرسال تنبيه للمشرف ---
+# --- نظام المراقبة التفصيلي (زي الكود القديم) ---
 async def notify_admin(context, message):
     if ADMIN_ID:
         try:
-            await context.bot.send_message(chat_id=ADMIN_ID, text=f"📢 تنبيه المراقبة:\n{message}")
-        except:
-            print("خطأ: تأكد من صحة ADMIN_ID وأنك بدأت محادثة مع البوت.")
+            # استخدام parse_mode='Markdown' عشان الرسائل تظهر منسقة
+            await context.bot.send_message(chat_id=ADMIN_ID, text=f"📢 *تقرير المراقبة:*\n{message}", parse_mode='Markdown')
+        except: pass
 
 # --- وظيفة استخراج النص ---
 def get_text_from_any(file_path):
@@ -46,16 +46,22 @@ def get_text_from_any(file_path):
             for slide in prs.slides:
                 for shape in slide.shapes:
                     if hasattr(shape, "text"): text += shape.text + " "
-    except:
-        pass
+    except: pass
     return text
 
 # --- أوامر البوت ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    await update.message.reply_text(f"أهلاً {user.first_name}! 🛠️\nأرسل ملف (PDF, Word, PPT) لتحويله.")
-    # تنبيه المشرف عند دخول مستخدم جديد
-    await notify_admin(context, f"المستخدم {user.first_name} (@{user.username}) بدأ استخدام البوت.")
+    user_name = user.first_name
+    
+    # تقرير تفصيلي للأدمن
+    admin_msg = (f"👤 *مستخدم جديد دخل البوت:*\n"
+                 f"🔹 الاسم: {user_name}\n"
+                 f"🔹 اليوزر: @{user.username if user.username else 'لا يوجد'}\n"
+                 f"🔹 الـ ID: `{user.id}`")
+    await notify_admin(context, admin_msg)
+    
+    await update.message.reply_text(f"مرحباً يا {user_name}! 👋\nأرسل ملف (PDF, Word, PPT) وسأعالجه لك فوراً.")
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
@@ -63,55 +69,64 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_ext = doc.file_name.lower().split('.')[-1]
     
     if file_ext not in ['pdf', 'docx', 'pptx', 'ppt']:
-        await update.message.reply_text("❌ أقبل فقط PDF, Word, PowerPoint.")
+        await update.message.reply_text("عذراً، أقبل ملفات PDF, Word, PowerPoint فقط.")
         return
 
-    pdf_path = os.path.join(DOWNLOAD_DIR, f"{uuid.uuid4()}_{doc.file_name}")
+    # إخطار الإدارة بالملف المرفوع
+    await notify_admin(context, f"📥 *{user.first_name}* أرسل ملفاً:\n📄 `{doc.file_name}`")
+
+    file_path = os.path.join(DOWNLOAD_DIR, f"{uuid.uuid4()}_{doc.file_name}")
     file = await context.bot.get_file(doc.file_id)
-    await file.download_to_drive(pdf_path)
-    context.user_data["current_file"] = pdf_path
+    await file.download_to_drive(file_path)
+    context.user_data["current_file"] = file_path
 
-    # تنبيه المشرف عند رفع ملف
-    await notify_admin(context, f"قام {user.first_name} برفع ملف: {doc.file_name}")
-
-    keyboard = [[InlineKeyboardButton("تحويل لصوت 🎧", callback_data="audio")]]
-    if file_ext == 'pdf':
-        keyboard.append([InlineKeyboardButton("تحويل لـ Word 📝", callback_data="word")])
-    
-    await update.message.reply_text(f"📄 تم استلام الملف. ماذا نفعل؟", reply_markup=InlineKeyboardMarkup(keyboard))
+    keyboard = [
+        [InlineKeyboardButton("تحويل لصوت 🎙️", callback_data="audio")],
+        [InlineKeyboardButton("تحويل لـ Word 📝", callback_data="word")]
+    ]
+    await update.message.reply_text(f"📄 الملف جاهز! ماذا تريد أن أفعل؟", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user = update.effective_user
+    user = query.from_user
     file_path = context.user_data.get("current_file")
     
     if not file_path or not os.path.exists(file_path): return
 
+    # مراقبة ضغطات الأزرار
+    await notify_admin(context, f"⚙️ *{user.first_name}* اختار عملية: `{query.data}`")
+
     if query.data == "audio":
-        await query.edit_message_text("🔄 جاري التحويل لصوت...")
+        await query.edit_message_text("🎧 جاري تحويل النص لصوت...")
         text = get_text_from_any(file_path)
         if text.strip():
-            audio_path = f"{uuid.uuid4()}.ogg"
-            tts = gTTS(text=text[:1000], lang='ar')
+            audio_path = f"{uuid.uuid4()}.mp3"
+            # ضبط الصوت على الإنجليزية en كما طلبت
+            tts = gTTS(text=text[:3000], lang='en', slow=False)
             tts.save(audio_path)
-            with open(audio_path, "rb") as voice:
-                await query.message.reply_voice(voice)
+            with open(audio_path, "rb") as audio:
+                await query.message.reply_audio(audio)
             os.remove(audio_path)
-            await notify_admin(context, f"✅ نجح {user.first_name} في تحويل نص لصوت.")
+            await notify_admin(context, f"✅ تم تحويل الصوت لـ *{user.first_name}* بنجاح.")
         else:
-            await query.message.reply_text("❌ لم أجد نصاً.")
+            await query.message.reply_text("لم أجد نصاً في الملف.")
 
     elif query.data == "word":
-        await query.edit_message_text("🔄 جاري التحويل لـ Word...")
-        docx_path = file_path.replace('.pdf', '.docx')
-        cv = Converter(file_path)
-        cv.convert(docx_path)
-        cv.close()
-        with open(docx_path, "rb") as f:
-            await query.message.reply_document(f)
-        os.remove(docx_path)
-        await notify_admin(context, f"✅ نجح {user.first_name} في تحويل PDF لـ Word.")
+        if not file_path.lower().endswith('.pdf'):
+            await query.message.reply_text("هذه الميزة لملفات PDF فقط.")
+            return
+        await query.edit_message_text("🔄 جاري التحويل لوورد...")
+        try:
+            docx_path = file_path.replace('.pdf', '.docx')
+            cv = Converter(file_path)
+            cv.convert(docx_path); cv.close()
+            with open(docx_path, "rb") as f:
+                await query.message.reply_document(f)
+            os.remove(docx_path)
+            await notify_admin(context, f"✅ تم تحويل PDF لـ Word لـ *{user.first_name}*.")
+        except Exception as e:
+            await query.message.reply_text(f"خطأ في التحويل: {e}")
 
 def main():
     if not BOT_TOKEN: return
@@ -124,3 +139,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
