@@ -3,4 +3,4 @@ flask
 gTTS
 PyMuPDF
 pdf2docx
-
+PyPDF2
